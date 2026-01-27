@@ -20,4 +20,4 @@ Ein E-Ink Dashboard für Berlin und Umgebung, basierend auf dem Seeed reTerminal
 
 *   **Gerät:** Seeed reTerminal E1001 oder Seeed XIAO ESP32S3
 *   **Display:** E-Ink Display (GxEPD2)
-*   **Gehäuse:** (Hier ggf. Link zu 3D-Druck Dateien einfügen, falls vorhanden)
+
