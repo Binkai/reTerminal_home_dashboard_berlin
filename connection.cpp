@@ -377,7 +377,7 @@ String blUrl = "https://api.openligadb.de/getmatchdata/bl1";
     filter[0]["team1"]["shortName"] = true;
     filter[0]["team2"]["shortName"] = true;
     filter[0]["matchDateTime"] = true; 
-    filter[0]["matchIsFinished"] = true; /
+    filter[0]["matchIsFinished"] = true; 
     filter[0]["matchResults"] = true;    
     
     DynamicJsonDocument doc(8192);
