@@ -129,7 +129,7 @@ void setup() {
        int h = timeinfo.tm_hour;
        int wDay = timeinfo.tm_wday; // 0=So, 1=Mo...
 
-       // Werktags (Mo-Fr) definieren
+       // Werktags (Mo-Do) definieren
        bool isWorkDay = (wDay >= 1 && wDay <= 4);
        
        // Standardmäßig: Rotation aktivieren

@@ -61,6 +61,7 @@ struct StravaActivity {
   String duration;     // "0h 32m"
   String date;         // "14.12."
   String paceOrSpeed;  // z.B. "5:30 /km" oder "25.0 km/h"
+  String polyline;  // für Karte
 };
 
 extern StravaActivity latestStrava;

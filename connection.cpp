@@ -493,8 +493,12 @@ void fetchStravaCombined() {
   if (codeAct == 200) {
     String payload = http.getString();
     DynamicJsonDocument filter(512);
-    filter[0]["name"] = true; filter[0]["distance"] = true; 
-    filter[0]["moving_time"] = true; filter[0]["type"] = true; filter[0]["start_date_local"] = true;
+    filter[0]["name"] = true; 
+    filter[0]["distance"] = true; 
+    filter[0]["moving_time"] = true; 
+    filter[0]["type"] = true;
+    filter[0]["start_date_local"] = true;
+    filter[0]["map"]["summary_polyline"] = true; // Die GPS Daten
     
     DynamicJsonDocument doc(4096);
     deserializeJson(doc, payload, DeserializationOption::Filter(filter));
@@ -503,7 +507,13 @@ void fetchStravaCombined() {
        JsonObject a = doc[0];
        latestStrava.name = cleanText(a["name"].as<String>());
        latestStrava.type = a["type"].as<String>();
-       
+       Serial1.print("Strava Type: ");
+       Serial1.println(latestStrava.type);
+       latestStrava.polyline = a["map"]["summary_polyline"].as<String>();
+       Serial1.print("Strava Polyline Length: ");
+       Serial1.println(latestStrava.polyline.length());
+       Serial1.print("Free Heap after Strava: ");
+       Serial1.println(ESP.getFreeHeap());
        float d = a["distance"].as<float>();
        latestStrava.distance = String(d / 1000.0, 1) + " km";
        

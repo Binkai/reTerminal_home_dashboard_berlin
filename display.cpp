@@ -320,7 +320,104 @@ void drawLowBatteryScreen(float voltage) {
 
   } while (display.nextPage());
 }
+// Hilfsfunktion zum Zeichnen der Polyline
+// Box: x, y, width, height definiert den Bereich auf dem Display
+void drawStravaRoute(String encoded, int x, int y, int w, int h) {
+  if (encoded.length() == 0) return;
+
+  // PASS 1: Grenzen finden (Min/Max Lat/Lon) für Auto-Zoom
+  long minLat = 2147483647, maxLat = -2147483648;
+  long minLon = 2147483647, maxLon = -2147483648;
+  
+  long lat = 0, lon = 0;
+  int index = 0;
+  int len = encoded.length();
+
+  while (index < len) {
+    int b, shift = 0, result = 0;
+    do {
+      b = encoded.charAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    int dlat = ((result & 1) ? ~(result >> 1) : (result >> 1));
+    lat += dlat;
+
+    shift = 0; result = 0;
+    do {
+      b = encoded.charAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    int dlon = ((result & 1) ? ~(result >> 1) : (result >> 1));
+    lon += dlon;
+
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+    if (lon < minLon) minLon = lon;
+    if (lon > maxLon) maxLon = lon;
+  }
+
+  // Sicherheitscheck: Verhindert Division durch Null bei Punkten
+  if (maxLat == minLat || maxLon == minLon) return;
+
+  // PASS 2: Zeichnen
+  lat = 0; lon = 0;
+  index = 0;
+  int lastX = -1, lastY = -1;
+  
+  // Padding im Rahmen (damit die Linie nicht am Rand klebt)
+  int pad = 5; 
+  int drawX = x + pad; 
+  int drawY = y + pad;
+  int drawW = w - (2 * pad);
+  int drawH = h - (2 * pad);
+
+  while (index < len) {
+    int b, shift = 0, result = 0;
+    do {
+      b = encoded.charAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    int dlat = ((result & 1) ? ~(result >> 1) : (result >> 1));
+    lat += dlat;
+
+    shift = 0; result = 0;
+    do {
+      b = encoded.charAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    int dlon = ((result & 1) ? ~(result >> 1) : (result >> 1));
+    lon += dlon;
+
+    // Koordinaten auf Pixel mappen
+    // Achtung: Y-Achse ist auf Displays meist invertiert (0 oben), aber Lat wächst nach oben (Nord)
+    // Daher map() für Y umkehren
+    int px = map(lon, minLon, maxLon, drawX, drawX + drawW);
+    int py = map(lat, minLat, maxLat, drawY + drawH, drawY); 
+
+    if (lastX != -1) {
+      // Linie etwas dicker zeichnen (2 Pixel Offset) für bessere Sichtbarkeit auf E-Ink
+      display.drawLine(lastX, lastY, px, py, GxEPD_BLACK);
+      display.drawLine(lastX+1, lastY, px+1, py, GxEPD_BLACK); 
+    }
+    lastX = px;
+    lastY = py;
+  }
+}
 void drawStravaCombinedPage(int nextUpdateMin, float voltage) {
+  bool testMode = false; 
+  
+  String drawPolyline = latestStrava.polyline;
+  String drawType = latestStrava.type;
+
+  if (testMode) {
+    // Das ist eine Fake-Route (eine kleine Runde im Tiergarten Berlin)
+    drawPolyline = "}g_Ic~kp@GTu@z@QRTl@l@d@`@f@^p@|@\\RPNj@Z^Lf@T`@HVKPOTQBQDQKQ?QHS@SBSDw@F_@Hs@Lq@Re@Pc@L[Nu@Vi@JOLIL?JFL@L?NCLAFKJQBM@OAMCKG]Io@Gc@?cAJe@Pk@Rq@J_@No@Le@H[?k@Cg@Gq@Eu@Co@?q@B[@Q@QDOBMFWHSHSFUFSDQ?QCODQ@SASCSESCSGw@M_@K[I_@Gc@Ee@Cg@?KASCMEMGSOq@?a@Dc@H_@?UE[GYI[KYQ_@Sc@Oa@OYQ_@Q]O_@KYI[G]E[CWCUAQAQDOFSBKBMFIBK@I?KCKEMGQIQKOKQKSOUMSQWOYQ[S_@Sc@Q_@O]Q[KYIWCWCUAQAQDOFSDMBK@K?KAKCKEKGMIMKQKSOUMSQWQYU_@Qa@Q_@O]QYKWIYCWCWAQAQDOFSDM@K?I?KAKCKEMGMIMKQKSMUMSQWQYQ_@Sc@O]QYKWIWCWCWAQAQDOFSDMBK@K?KAKCKEMGMIMKQKSOWMSQWQYQ_@Sc@O]QYKWIWCWCWAQAQDOFSDMBK@I?KAKCKEKG";
+    drawType = "Run";
+  }
   display.setFullWindow(); display.firstPage();
   do {
     // 1. Header
@@ -352,24 +449,22 @@ void drawStravaCombinedPage(int nextUpdateMin, float voltage) {
 
     int yBig = yTop + 85;
     
-    u8g2.setFont(u8g2_font_helvB24_tf);
-    u8g2.setCursor(10, yBig); u8g2.print(latestStrava.distance);
+    u8g2.setFont(u8g2_font_helvB18_tf);
+    u8g2.setCursor(10, yTop + 85); u8g2.print("Distanz: " + latestStrava.distance);
     
     // Zeit & Pace (Mittel)
-    u8g2.setFont(u8g2_font_helvB18_tf);
-    u8g2.setCursor(250, yBig); u8g2.print(latestStrava.duration);
-    u8g2.setCursor(450, yBig); u8g2.print(latestStrava.paceOrSpeed);
+    u8g2.setCursor(10, yTop + 125); u8g2.print("Dauer: " + latestStrava.duration);
+    u8g2.setCursor(10, yTop + 165); u8g2.print("Pace: " + latestStrava.paceOrSpeed);
 
     // ==========================================
     // TRENNLINIE
     // ==========================================
-    int ySplit = 230;
+    int ySplit = 280;
     display.fillRect(0, ySplit, 800, 4, GxEPD_BLACK);
 
     // ==========================================
     // BEREICH 2: STATISTIKEN (UNTEN)
     // ==========================================
-    // Wir nutzen den Platz bis 480px. Keine Wetteranzeige!
     
     int yStats = ySplit + 40;
     int colRun = 10;
@@ -386,7 +481,7 @@ void drawStravaCombinedPage(int nextUpdateMin, float voltage) {
     // Monat (4 Wochen)
     u8g2.setCursor(colRun, yStats + 50); u8g2.print("4 Wo: " + String(stravaStats.recentRunDist, 1) + " km");
     u8g2.setFont(FONT_SMALL);
-    u8g2.setCursor(colRun + 220, yStats + 50); u8g2.print("(" + String(stravaStats.recentRunCount) + ")"); // Anzahl
+    u8g2.setCursor(colRun + 220, yStats + 50); u8g2.print("Anzahl: " + String(stravaStats.recentRunCount));
 
     // Jahr
     u8g2.setFont(u8g2_font_helvB18_tf);
@@ -400,11 +495,24 @@ void drawStravaCombinedPage(int nextUpdateMin, float voltage) {
     // Monat
     u8g2.setCursor(colRide, yStats + 50); u8g2.print("4 Wo: " + String(stravaStats.recentRideDist, 0) + " km");
     u8g2.setFont(FONT_SMALL);
-    u8g2.setCursor(colRide + 220, yStats + 50); u8g2.print("(" + String(stravaStats.recentRideCount) + ")");
+    u8g2.setCursor(colRide + 220, yStats + 50); u8g2.print("Anzahl: " + String(stravaStats.recentRideCount));
 
     // Jahr
     u8g2.setFont(u8g2_font_helvB18_tf);
     u8g2.setCursor(colRide, yStats + 100); u8g2.print("Jahr: " + String(stravaStats.yearRideDist, 0) + " km");
+    if (drawPolyline.length() > 10) {
+      
+      // Definieren, wo die Karte hin soll
+      int xMap = 400; // Beispiel: Rechts neben dem Text
+      int yMap = 70; 
+      int wMap = 280;     // Breite der Karte
+      int hMap = 200;      // Höhe der Karte
+      u8g2.setFont(u8g2_font_helvB08_tf);
+      u8g2.setCursor(xMap, yMap-2); u8g2.print("Strecke (Karte)");
 
+      display.drawRect(xMap, yMap, wMap, hMap, GxEPD_BLACK);
+
+      drawStravaRoute(drawPolyline, xMap, yMap, wMap, hMap);
+  }
   } while (display.nextPage());
 }
