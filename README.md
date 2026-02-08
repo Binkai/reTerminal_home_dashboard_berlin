@@ -2,7 +2,7 @@
 
 Ein E-Ink Dashboard für Berlin und Umgebung, basierend auf dem Seeed reTerminal E1001 (XIAO ESP32-S3). Es zeigt aktuelle ÖPNV-Daten, Verkehrslage, Wetter, Nachrichten und Sport-Ergebnisse an.
 
-<!-- PLATZHALTER FÜR SPÄTERES BILD -->
+![Dashboard Sportseite](dashboard.jpg)
 
 ## Features
 
