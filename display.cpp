@@ -211,7 +211,7 @@ void drawNewsPage(int nextUpdateMin, float voltage) {
     drawGlobalHeader("Tagesschau", voltage, nextUpdateMin);
 
     int yPos = 80;
-    if (newsCount == 0) { u8g2.setFont(FONT_SMALL); u8g2.setCursor(20, 100); u8g2.print("Lade Daten..."); }
+    if (newsCount == 0) { u8g2.setFont(FONT_SMALL); u8g2.setCursor(20, 100); u8g2.print("Keine Nachrichten abgerufen (newsCount == 0)!"); }
 
     u8g2.setFont(FONT_SMALL); 
     for (int i = 0; i < newsCount; i++) {
@@ -503,7 +503,7 @@ void drawStravaCombinedPage(int nextUpdateMin, float voltage) {
     if (drawPolyline.length() > 10) {
       
       // Definieren, wo die Karte hin soll
-      int xMap = 400; // Beispiel: Rechts neben dem Text
+      int xMap = 450; // Beispiel: Rechts neben dem Text
       int yMap = 70; 
       int wMap = 280;     // Breite der Karte
       int hMap = 200;      // Höhe der Karte

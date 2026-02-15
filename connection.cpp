@@ -146,308 +146,287 @@ void fetchWeatherData() {
 }
 
 void fetchNewsData() {
-  WiFiClientSecure client; client.setInsecure(); HTTPClient http;
+  Serial1.println("Tagesschau - Datenabruf (PSRAM Mode) - Beginn");
+
+  WiFiClientSecure client;
+  client.setInsecure(); // Zertifikate ignorieren spart Rechenzeit
+  HTTPClient http;
+
   String url = "https://www.tagesschau.de/api2u/homepage";
+  
   http.begin(client, url);
-  http.setUserAgent("Mozilla/5.0 (ESP32)");
-  http.setTimeout(10000); 
+  http.setTimeout(20000); // 20 Sekunden Timeout
+  
   int httpCode = http.GET();
+  
+  Serial1.print("HTTP Status: ");
+  Serial1.println(httpCode);
+
   if (httpCode == 200) {
+    // SCHRITT 1: Alles in einen String laden.
+    // Der ESP32S3 legt große Strings automatisch im PSRAM ab, wenn aktiviert.
+    Serial1.println("Lade JSON... bitte warten...");
     String payload = http.getString();
-    DynamicJsonDocument filter(512);
-    filter["news"][0]["title"] = true;
-    filter["news"][0]["date"] = true;
-    DynamicJsonDocument doc(30000); 
-    DeserializationError error = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
-    if (!error) {
-      JsonArray news = doc["news"];
-      newsCount = 0;
-      if (!news.isNull()) {
-        for (JsonObject n : news) {
-          if (newsCount >= 5) break;
-          String rawTitle = n["title"].as<String>();
-          String rawDate = n["date"].as<String>(); 
-          newsList[newsCount].headline = cleanText(rawTitle); 
-          if(rawDate.length() > 16) newsList[newsCount].time = rawDate.substring(11, 16);
-          else newsList[newsCount].time = "--:--";
-          newsCount++;
+    
+    Serial1.print("Download fertig. Größe: ");
+    Serial1.print(payload.length());
+    Serial1.println(" Bytes");
+
+    if (payload.length() > 0) {
+        DynamicJsonDocument doc(45000); 
+
+        // Filter definieren
+        DynamicJsonDocument filter(512);
+        filter["news"][0]["title"] = true;
+        filter["news"][0]["date"] = true;
+        filter["news"][0]["firstSentence"] = true;
+
+        Serial1.println("Starte Deserialisierung...");
+        DeserializationError error = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+
+        if (!error) {
+            JsonArray news = doc["news"];
+            int availableNews = news.size();
+            Serial1.print("Gefundene News-Elemente: ");
+            Serial1.println(availableNews);
+
+            newsCount = 0;
+            for (JsonObject n : news) {
+                if (newsCount >= 5) break;
+                
+                String rawTitle = n["title"].as<String>();
+                String rawDate = n["date"].as<String>();
+                
+                Serial1.print("News "); Serial1.print(newsCount+1); Serial1.print(": ");
+                Serial1.println(rawTitle);
+                
+                // ... hier dein Zuweisungscode für newsList ...
+                newsList[newsCount].headline = cleanText(rawTitle);
+                 if(rawDate.length() > 16) {
+                     newsList[newsCount].time = rawDate.substring(11, 16);
+                 } else {
+                     newsList[newsCount].time = "--:--";
+                 }
+
+                newsCount++;
+            }
+        } else {
+            Serial1.print("JSON Parsing Fehler: ");
+            Serial1.println(error.c_str());
         }
-      }
+    } else {
+        Serial1.println("Fehler: Leere Antwort erhalten!");
+    }
+  } else {
+    Serial1.println("HTTP Verbindung fehlgeschlagen");
+  }
+  http.end();
+  Serial1.println("Tagesschau - Datenabruf - Ende");
+}
+
+time_t timegm_impl(struct tm *tm) {
+  time_t t = mktime(tm);
+  return t + 3600; // Grobe Korrektur, sauberer ist unten die Offset-Berechnung
+}
+
+// --- UNTERFUNKTION: Formel 1 ---
+bool fetchF1Data(time_t now) {
+  Serial1.println("SPORT: Lade F1...");
+  WiFiClientSecure client; client.setInsecure(); HTTPClient http;
+  
+  String url = "https://api.jolpi.ca/ergast/f1/current/next.json";
+  
+  http.begin(client, url);
+  int httpCode = http.GET();
+  
+  bool f1Active = false;
+  nextF1.hasRace = false; // Reset
+
+  if (httpCode == 200) {
+    Stream& stream = http.getStream();
+    
+    DynamicJsonDocument doc(4096); 
+    DeserializationError error = deserializeJson(doc, stream); 
+
+    if (!error) {
+      JsonObject race = doc["MRData"]["RaceTable"]["Races"][0];
+      if (!race.isNull()) {
+        nextF1.raceName = cleanText(race["raceName"].as<String>());
+        if (race.containsKey("Circuit")) {
+          nextF1.circuit = cleanText(race["Circuit"]["circuitName"].as<String>());
+        } 
+        String dateStr = race["date"].as<String>(); // "2025-03-16"
+        String timeStr = race["time"].as<String>(); // "14:00:00Z"
+        
+        struct tm tm_utc = {0};
+        strptime(dateStr.c_str(), "%Y-%m-%d", &tm_utc);
+        int h, m, s;
+        sscanf(timeStr.c_str(), "%d:%d:%d", &h, &m, &s);
+        tm_utc.tm_hour = h; tm_utc.tm_min = m; tm_utc.tm_sec = s;
+        struct tm timeinfo;
+        getLocalTime(&timeinfo);
+        long offsetSec = 0;
+        if (timeinfo.tm_isdst == 1) offsetSec = 7200; // Sommerzeit +2h
+        else offsetSec = 3600; // Winterzeit +1h
+
+        time_t raceTimeRaw = mktime(&tm_utc); 
+        time_t raceTimeLocal = raceTimeRaw; //
+        int localHour = (h + (timeinfo.tm_isdst ? 2 : 1)) % 24;
+        
+        // String bauen
+        char timeBuf[16];
+        sprintf(timeBuf, "%02d:%02d", localHour, m);
+        
+        // Datum formatieren
+        String dStr = dateStr.substring(8, 10);
+        String mStr = dateStr.substring(5, 7);
+        nextF1.raceTime = "Rennen: " + dStr + "." + mStr + ". " + String(timeBuf) + " Uhr";
+
+        if (race.containsKey("Qualifying")) {
+           String qTime = race["Qualifying"]["time"].as<String>();
+           int qH = qTime.substring(0,2).toInt();
+           int qLocalH = (qH + (timeinfo.tm_isdst ? 2 : 1)) % 24;
+           char qBuf[10];
+           sprintf(qBuf, "%02d:%s", qLocalH, qTime.substring(3,5).c_str());
+           nextF1.qualiTime = "Quali: " + String(qBuf) + " Uhr";
+        } else {
+           nextF1.qualiTime = "Quali: --:--";
+        }
+        nextF1.hasRace = true;
+     }
     }
   }
   http.end();
+  return f1Active;
 }
-void fetchSportsData() {
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPClient http;
 
-    // Variablen für Zeitvergleich
-    time_t now;
-    time(&now);
-    bool eventFound = false; 
-
-    Serial1.println("--------------------------------");
-    Serial1.println("DEBUG: 1. Start fetchSportsData");
-
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial1.println("DEBUG: 2. WiFi ist verbunden");
-
-        String f1Url = "https://api.jolpi.ca/ergast/f1/current/next.json";
-        
-        http.begin(client, f1Url);
-        nextF1.hasRace = false; 
-
-        Serial1.println("DEBUG: 3. Sende GET Request...");
-        int httpResponseCode = http.GET();
-
-        Serial1.print("DEBUG: 4. Response Code erhalten: ");
-        Serial1.println(httpResponseCode);
-
-        if (httpResponseCode > 0) {
-            Serial1.println("DEBUG: 5. Daten empfangen, verarbeite JSON...");
-            String payload = http.getString();
-            
-            // Speicher ggf. erhöhen, falls die API mehr sendet
-            DynamicJsonDocument doc(4096);
-            DeserializationError error = deserializeJson(doc, payload);
-
-            if (error) {
-                Serial1.print("DEBUG: JSON Fehler: ");
-                Serial1.println(error.c_str());
-                http.end();
-                return;
-            }
-
-            // Das Haupt-Objekt für spätere Nutzung
-            JsonObject mainRaceObj = doc["MRData"]["RaceTable"]["Races"][0];
-
-            Serial1.println("\n--- F1 DEBUG START ---");
-
-            // 1. Zeit prüfen
-            struct tm timeinfo;
-            bool timeValid = getLocalTime(&timeinfo);
-            int cYear = 0, cMonth = 0, cDay = 0;
-
-            if(timeValid){
-                char debugToday[15];
-                strftime(debugToday, sizeof(debugToday), "%Y-%m-%d", &timeinfo);
-                Serial1.print("DEBUG: ESP32 Datum: ");
-                Serial1.println(debugToday);
-                
-                cYear = timeinfo.tm_year + 1900;
-                cMonth = timeinfo.tm_mon + 1;
-                cDay = timeinfo.tm_mday;
-            } else {
-                Serial1.println("DEBUG: FEHLER - Keine NTP Zeit!");
-            }
-
-            // 2. API Inhalt prüfen
-            JsonArray races = doc["MRData"]["RaceTable"]["Races"];
-            Serial1.print("DEBUG: Rennen gefunden: ");
-            Serial1.println(races.size());
-
-            // 3. Schleife (Nimm Variable 'r' statt 'race' um Konflikte zu vermeiden)
-            for (JsonObject r : races) {
-                const char* rDate = r["date"];
-                const char* rName = r["raceName"];
-                
-                Serial1.print("DEBUG: API liefert: ");
-                Serial1.print(rName);
-                Serial1.print(" -> ");
-                Serial1.println(rDate);
-
-                // Datum parsen
-                int rYear, rMonth, rDay;
-                sscanf(rDate, "%d-%d-%d", &rYear, &rMonth, &rDay);
-
-                // Vergleich nur machen, wenn wir gültige Zeit haben
-                if (timeValid) {
-                    if (rDay == cDay && rMonth == cMonth && rYear == cYear) {
-                         Serial1.println("       -> STATUS: HEUTE!");
-                    } else if (rMonth == cMonth) {
-                         Serial1.println("       -> STATUS: Dieser Monat, aber nicht heute.");
-                    } else {
-                         Serial1.println("       -> STATUS: Anderer Monat (Zukunft oder Vergangenheit).");
-                    }
-                }
-            }
-            Serial1.println("--- F1 DEBUG ENDE ---\n");
-            // --- DEBUG ENDE ---
-
-            if (!mainRaceObj.isNull()) {
-                nextF1.raceName = cleanText(mainRaceObj["raceName"].as<String>());
-                if (mainRaceObj.containsKey("Circuit")) {
-                    nextF1.circuit = cleanText(mainRaceObj["Circuit"]["circuitName"].as<String>());
-                }
-
-                String dateStr = mainRaceObj["date"].as<String>();
-                String timeStr = mainRaceObj["time"].as<String>();
-
-                struct tm tm_race = {0};
-                strptime(dateStr.c_str(), "%Y-%m-%d", &tm_race);
-                tm_race.tm_hour = 12; 
-                time_t raceTime = mktime(&tm_race);
-
-                double diff = difftime(raceTime, now);
-
-                // Logik: Anzeigen (-12h bis +4 Tage)
-                if (diff > -43200 && diff < 345600) { 
-                    nextF1.hasRace = true;
-                    eventFound = true;
-                } else {
-                    // Daten da, aber nicht dieses Wochenende
-                    nextF1.hasRace = true; 
-                }
-
-      int y, M, d, h, m, s;
-      // API Format ist: "2025-03-16" und "14:00:00Z"
-      sscanf(dateStr.c_str(), "%d-%d-%d", &y, &M, &d);
-      sscanf(timeStr.c_str(), "%d:%d:%d", &h, &m, &s);
-
-      struct tm tm_utc = {0};
-      tm_utc.tm_year = y - 1900; // Jahre seit 1900
-      tm_utc.tm_mon  = M - 1;    // Monate 0-11
-      tm_utc.tm_mday = d;
-      tm_utc.tm_hour = h;
-      tm_utc.tm_min  = m;
-      tm_utc.tm_sec  = s;
-      tm_utc.tm_isdst = 0;       // API sendet immer UTC, also kein DST
-
-      char oldTZ[64];
-      strcpy(oldTZ, getenv("TZ")); 
-      setenv("TZ", "UTC0", 1); 
-      tzset();
-      time_t t_race = mktime(&tm_utc); 
-      
-      // 2. TZ wiederherstellen (auf Berlin)
-      setenv("TZ", oldTZ, 1);
-      tzset();
-      
-      // 3. Jetzt als Lokalzeit auslesen
-      struct tm *tm_local = localtime(&t_race);
-      
-      // 4. String bauen
-      char timeBuf[10];
-      char dateBuf[10];
-      strftime(timeBuf, sizeof(timeBuf), "%H:%M", tm_local);
-      strftime(dateBuf, sizeof(dateBuf), "%d.%m.", tm_local);
-      
-      // Ergebnis: "Rennen: 16.03. 15:00 Uhr"
-
-// --- NEU: Datum formatieren ---
-      String dayStr = dateStr.substring(8, 10);
-      String monStr = dateStr.substring(5, 7);
-      String shortDate = dayStr + "." + monStr + "."; 
-
-      nextF1.raceTime = "Rennen: " + String(dateBuf) + " " + String(timeBuf) + " Uhr";
-      
-      if (mainRaceObj.containsKey("Qualifying")) {
-          String qTime = mainRaceObj["Qualifying"]["time"].as<String>();
-                   
-          int qHour = qTime.substring(0,2).toInt() + 1;
-          String qDisplayHour = String(qHour);
-          if (qHour < 10) qDisplayHour = "0" + qDisplayHour;
-
-          nextF1.qualiTime = "Quali: " + qDisplayHour + ":" + qTime.substring(3,5) + " Uhr";
-      } else {
-          nextF1.qualiTime = "Quali: --:--";
-      }
-    
-            }
-        }
-        http.end();
-    } else {
-        Serial1.println("DEBUG: WiFi nicht verbunden!");
-    }
-            
-
-  // 2. BUNDESLIGA
-String blUrl = "https://api.openligadb.de/getmatchdata/bl1";
-  http.begin(client, blUrl);
-  Serial1.println("BuLi - Datenabruf - Beginn");
+// --- UNTERFUNKTION: Fußball (BL1 oder UCL) ---
+bool fetchOpenLigaDB(String league, time_t now) {
+  Serial1.print("SPORT: Lade Liga: "); Serial1.println(league);
+  
+  WiFiClientSecure client; client.setInsecure(); HTTPClient http;
+  String url = "https://api.openligadb.de/getmatchdata/" + league;
+  
+  http.begin(client, url);
   int httpCode = http.GET();
-  Serial1.printf("HTTP Code: %d\n", httpCode); 
-  blMatchCount = 0;
+  
+  bool matchFound = false;
+  blMatchCount = 0; // Reset (nutzen wir auch für UCL)
+
   if (httpCode == 200) {
     String payload = http.getString();
     Serial1.printf("Payload Größe: %d bytes\n", payload.length()); 
-    // FILTER ANPASSEN: Wir brauchen Ergebnisse und Status!
     DynamicJsonDocument filter(512);
     filter[0]["team1"]["shortName"] = true;
     filter[0]["team2"]["shortName"] = true;
-    filter[0]["matchDateTime"] = true; 
-    filter[0]["matchIsFinished"] = true; 
-    filter[0]["matchResults"] = true;    
-    
-    DynamicJsonDocument doc(8192);
+    filter[0]["matchDateTime"] = true;
+    filter[0]["matchIsFinished"] = true;
+    filter[0]["matchResults"] = true;
+    DynamicJsonDocument doc(8192); 
     DeserializationError error = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
-    
+
     if (!error) {
       JsonArray arr = doc.as<JsonArray>();
       
-      // PRÜFUNG: Ist das erste Match dieses Spieltags nahe?
       if (arr.size() > 0) {
-          String firstMatchDate = arr[0]["matchDateTime"].as<String>();
-          struct tm tm_match = {0};
-          strptime(firstMatchDate.c_str(), "%Y-%m-%dT%H:%M:%S", &tm_match);
-          time_t matchTime = mktime(&tm_match);
-          double diff = difftime(matchTime, now);
-          
-          if (diff > -172800 && diff < 345600) {
-              eventFound = true;
-          }
+         String firstDate = arr[0]["matchDateTime"].as<String>();
+         struct tm tm_m = {0};
+         strptime(firstDate.c_str(), "%Y-%m-%dT%H:%M:%S", &tm_m);
+         time_t matchTime = mktime(&tm_m);
+         double diff = difftime(matchTime, now);
+         matchFound = true;
       }
 
       for (JsonObject match : arr) {
         if (blMatchCount >= 9) break;
-        
-        String t1 = match["team1"]["shortName"].as<String>();
-        String t2 = match["team2"]["shortName"].as<String>();
-        
-        blMatches[blMatchCount].homeTeam = cleanText(t1);
-        blMatches[blMatchCount].guestTeam = cleanText(t2);
-        
-        bool isFinished = match["matchIsFinished"];
-        
-        if (isFinished) {
-            int score1 = 0;
-            int score2 = 0;
-            for (JsonObject res : match["matchResults"].as<JsonArray>()) {
-                if (res["resultTypeID"] == 2) {
-                    score1 = res["pointsTeam1"];
-                    score2 = res["pointsTeam2"];
-                    break;
-                }
-            }
-            // Ergebnis in den timeString schreiben (z.B. "3:1")
-            blMatches[blMatchCount].timeString = String(score1) + ":" + String(score2);
-            
-        } else {
-            String dt = match["matchDateTime"].as<String>(); 
-            struct tm tm_match = {0};
-            strptime(dt.c_str(), "%Y-%m-%dT%H:%M:%S", &tm_match);
-            char buffer[16];
-            strftime(buffer, sizeof(buffer), "%a %H:%M", &tm_match); 
-            String sDate = String(buffer);
-            sDate.replace("Fri", "Fr"); sDate.replace("Sat", "Sa"); sDate.replace("Sun", "So");
-            
-            blMatches[blMatchCount].timeString = sDate;
-        }
 
+        String t1 = cleanText(match["team1"]["shortName"].as<String>());
+        String t2 = cleanText(match["team2"]["shortName"].as<String>());
+        
+        // Wenn Teams leer sind (passiert bei UCL manchmal bei "TBD"), überspringen
+        if(t1 == "null" || t2 == "null") continue;
+
+        blMatches[blMatchCount].homeTeam = t1;
+        blMatches[blMatchCount].guestTeam = t2;
+
+        if (match["matchIsFinished"]) {
+          int s1 = 0, s2 = 0;
+          for (JsonObject res : match["matchResults"].as<JsonArray>()) {
+            if (res["resultTypeID"] == 2) {
+               s1 = res["pointsTeam1"];
+               s2 = res["pointsTeam2"];
+               break;
+            }
+          }
+          blMatches[blMatchCount].timeString = String(s1) + ":" + String(s2);
+        } else {
+          String dt = match["matchDateTime"].as<String>();
+          struct tm tm_time = {0};
+          strptime(dt.c_str(), "%Y-%m-%dT%H:%M:%S", &tm_time);
+          char buf[16];
+          strftime(buf, sizeof(buf), "%a %H:%M", &tm_time);
+          String sDate = String(buf);
+          sDate.replace("Fri", "Fr"); sDate.replace("Sat", "Sa"); sDate.replace("Sun", "So");
+          sDate.replace("Mon", "Mo"); sDate.replace("Tue", "Di"); sDate.replace("Wed", "Mi"); sDate.replace("Thu", "Do");
+          blMatches[blMatchCount].timeString = sDate;
+        }
         blMatchCount++;
       }
     } else {
-      Serial1.println("JSON Fehler: ");
-      Serial.println(error.c_str()); 
+        Serial1.print("SPORT: JSON Error "); Serial1.println(error.c_str());
     }
-      Serial1.println("BuLi - Datenabruf - Ende");
   }
   http.end();
-  // Ergebnis speichern
-  isSportWeekend = eventFound;
-  cachedSportWeekend = eventFound; 
+  return matchFound;
 }
+void fetchSportsData() {
+  Serial1.println("--------------------------------");
+  Serial1.println("SPORT: Datenabruf Start");
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial1.println("SPORT: WiFi nicht verbunden!");
+    return;
+  }
+  time_t now;
+  time(&now);
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial1.println("SPORT: Konnte Zeit nicht holen.");
+    return;
+  }
+  
+  // Flag zurücksetzen
+  bool eventFound = false;
+
+  // ------------------------------
+  // TEIL A: Formel 1 abrufen
+  // ------------------------------
+  if (fetchF1Data(now)) {
+    eventFound = true;
+  }
+
+  // ------------------------------
+  // TEIL B: Fußball Logik (BL vs UCL)
+  // ------------------------------
+  int wday = timeinfo.tm_wday;
+  String leagueShortcut = "bl1"; // Standard
+  if (wday == 2 || wday == 3) {
+    Serial1.println("SPORT: Es ist Di/Mi -> Prüfe Champions League");
+    leagueShortcut = "ucl";
+  } else {
+    Serial1.println("SPORT: Es ist Do-Mo -> Prüfe Bundesliga");
+  }
+
+  if (fetchOpenLigaDB(leagueShortcut, now)) {
+    eventFound = true;
+  }
+
+  // Globalen Status setzen
+  isSportWeekend = eventFound;
+  cachedSportWeekend = eventFound;
+  Serial1.println("SPORT: Datenabruf Ende");
+}
+
 StravaActivity latestStrava;
 StravaStats stravaStats;
 
