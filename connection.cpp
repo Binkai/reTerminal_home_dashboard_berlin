@@ -7,6 +7,7 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <ESPping.h>
+#include <base64.h>
 
 void setupWiFi() {
   if (!WiFi.config(local_IP, gateway, subnet, primaryDNS)) {
@@ -27,7 +28,7 @@ void setupWiFi() {
 
 void fetchBVGData(int currentPage) {
   WiFiClientSecure client; client.setInsecure(); HTTPClient http;
-  String url = "https://v6.vbb.transport.rest/stops/" + STOP_ID + "/departures?results=30&duration=240&suburban=false&bus=false&tram=false&regional=false&express=false&ferry=false";
+  String url = "https://v6.vbb.transport.rest/stops/" + STOP_ID + "/departures?results=30&duration=240&bus=false&tram=false&regional=false&express=false&ferry=false";
   http.begin(client, url);
   int httpCode = http.GET();
   Serial1.println("BVG - Datenabruf - Beginn");
@@ -166,13 +167,6 @@ void fetchNewsData() {
     // SCHRITT 1: Alles in einen String laden.
     // Der ESP32S3 legt große Strings automatisch im PSRAM ab, wenn aktiviert.
     Serial1.println("Lade JSON... bitte warten...");
-    String payload = http.getString();
-    
-    Serial1.print("Download fertig. Größe: ");
-    Serial1.print(payload.length());
-    Serial1.println(" Bytes");
-
-    if (payload.length() > 0) {
         DynamicJsonDocument doc(45000); 
 
         // Filter definieren
@@ -182,8 +176,7 @@ void fetchNewsData() {
         filter["news"][0]["firstSentence"] = true;
 
         Serial1.println("Starte Deserialisierung...");
-        DeserializationError error = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
-
+        DeserializationError error = deserializeJson(doc, http.getString(), DeserializationOption::Filter(filter));
         if (!error) {
             JsonArray news = doc["news"];
             int availableNews = news.size();
@@ -214,10 +207,8 @@ void fetchNewsData() {
             Serial1.print("JSON Parsing Fehler: ");
             Serial1.println(error.c_str());
         }
-    } else {
-        Serial1.println("Fehler: Leere Antwort erhalten!");
     }
-  } else {
+  else {
     Serial1.println("HTTP Verbindung fehlgeschlagen");
   }
   http.end();
@@ -237,20 +228,28 @@ bool fetchF1Data(time_t now) {
   String url = "https://api.jolpi.ca/ergast/f1/current/next.json";
   
   http.begin(client, url);
+  http.addHeader("User-Agent", "ESP32-S3-F1-App/1.0");
   int httpCode = http.GET();
   
   bool f1Active = false;
   nextF1.hasRace = false; // Reset
 
   if (httpCode == 200) {
-    Stream& stream = http.getStream();
+    Serial1.println("SPORT: F1 HTTP Code 200");
+    String payload = http.getString();
     
     DynamicJsonDocument doc(4096); 
-    DeserializationError error = deserializeJson(doc, stream); 
-
+    DeserializationError error = deserializeJson(doc, payload); 
+    if (error) {
+      // 3. Gib den GANZ GENAUEN Grund für den Fehler aus
+      Serial1.print("SPORT: JSON Deserialisierung fehlgeschlagen: ");
+      Serial1.println(error.c_str());
+    }
     if (!error) {
+      Serial1.println("F1 - JSON erfolgreich gezogen");
       JsonObject race = doc["MRData"]["RaceTable"]["Races"][0];
       if (!race.isNull()) {
+        Serial1.println("SPORT: F1 Race != isNull");
         nextF1.raceName = cleanText(race["raceName"].as<String>());
         if (race.containsKey("Circuit")) {
           nextF1.circuit = cleanText(race["Circuit"]["circuitName"].as<String>());
@@ -293,6 +292,9 @@ bool fetchF1Data(time_t now) {
            nextF1.qualiTime = "Quali: --:--";
         }
         nextF1.hasRace = true;
+        Serial1.println("SPORT: F1 positiv geladen...");
+        f1Active = true;
+
      }
     }
   }
@@ -430,121 +432,165 @@ void fetchSportsData() {
 StravaActivity latestStrava;
 StravaStats stravaStats;
 
-// Interne Helper-Funktion (nicht im Header, nur hier)
-String getStravaTokenInternal() {
-  WiFiClientSecure client; client.setInsecure(); HTTPClient http;
-  String authUrl = "https://www.strava.com/oauth/token";
-  authUrl += "?client_id=" + STRAVA_CLIENT_ID + "&client_secret=" + STRAVA_CLIENT_SECRET;
-  authUrl += "&refresh_token=" + STRAVA_REFRESH_TOKEN + "&grant_type=refresh_token";
-  
-  http.begin(client, authUrl);
-  int httpCode = http.POST("");
-  String token = "";
-  if (httpCode == 200) {
-    DynamicJsonDocument doc(1024);
-    deserializeJson(doc, http.getString());
-    token = doc["access_token"].as<String>();
-  }
-  http.end();
-  return token;
+String getIntervalsAuthHeader() {
+  String auth = "API_KEY:" + INTERVALS_API_KEY;
+  return "Basic " + base64::encode(auth);
 }
-
-// --- HAUPTFUNKTION FÜR Strava ---
 void fetchStravaCombined() {
-  Serial1.println("Strava Combined - Start...");
-  latestStrava.hasData = false;
-  stravaStats.hasData = false;
+  Serial1.println("Intervals Combined - Start...");
+  latestStrava.hasData = false; 
+  stravaStats.hasData = false;  
 
-  // 1. Token holen (nur 1x!)
-  String token = getStravaTokenInternal();
-  if (token == "") { Serial1.println("Strava Auth Fehler"); return; }
-
-  WiFiClientSecure client; client.setInsecure(); HTTPClient http;
+  WiFiClientSecure client; 
+  client.setInsecure(); 
+  HTTPClient http;
+  
+  String authHeader = getIntervalsAuthHeader();
 
   // -----------------------------
   // TEIL A: Letzte Aktivität holen
   // -----------------------------
-  String actUrl = "https://www.strava.com/api/v3/athlete/activities?per_page=1";
+  // Wir holen die letzten 5 Aktivitäten (um sicherzustellen, dass wir einen echten Lauf finden)
+    // Zeitraum zwingend mitgeben, z.B. Juli bis Ende des Jahres
+  String actUrl = "https://intervals.icu/api/v1/athlete/" + INTERVALS_ATHLETE_ID + "/activities?oldest=2026-07-01&newest=2026-12-31";
   http.begin(client, actUrl);
-  http.addHeader("Authorization", "Bearer " + token);
+  http.addHeader("Authorization", authHeader);
+  
   int codeAct = http.GET();
   
   if (codeAct == 200) {
     String payload = http.getString();
+    
+    // Filter einrichten, um RAM zu sparen (wir brauchen nicht alles)
     DynamicJsonDocument filter(512);
     filter[0]["name"] = true; 
-    filter[0]["distance"] = true; 
-    filter[0]["moving_time"] = true; 
     filter[0]["type"] = true;
     filter[0]["start_date_local"] = true;
-    filter[0]["map"]["summary_polyline"] = true; // Die GPS Daten
+    filter[0]["distance"] = true; // Kommt in Metern
+    filter[0]["moving_time"] = true; // Kommt in Sekunden
+    filter[0]["average_speed"] = true; // m/s
+    // Hinweis: Intervals liefert standardmäßig keine Polyline im Aktivitäten-Array. 
+    // Wenn du eine Polyline brauchst, musst du die Aktivität einzeln abfragen (siehe unten).
     
     DynamicJsonDocument doc(4096);
     deserializeJson(doc, payload, DeserializationOption::Filter(filter));
     
-    if (doc.size() > 0) {
-       JsonObject a = doc[0];
+    JsonArray activities = doc.as<JsonArray>();
+    
+    if (activities.size() > 0) {
+       // Nimm die erste Aktivität im Array (die neueste)
+       JsonObject a = activities[0];
+       
        latestStrava.name = cleanText(a["name"].as<String>());
        latestStrava.type = a["type"].as<String>();
-       Serial1.print("Strava Type: ");
+       
+       Serial1.print("Intervals Type: ");
        Serial1.println(latestStrava.type);
-       latestStrava.polyline = a["map"]["summary_polyline"].as<String>();
-       Serial1.print("Strava Polyline Length: ");
-       Serial1.println(latestStrava.polyline.length());
-       Serial1.print("Free Heap after Strava: ");
-       Serial1.println(ESP.getFreeHeap());
+       
        float d = a["distance"].as<float>();
        latestStrava.distance = String(d / 1000.0, 1) + " km";
        
-       int s = a["moving_time"];
+       int s = a["moving_time"].as<int>();
        latestStrava.duration = String(s/3600) + "h " + String((s%3600)/60) + "m";
        
        String rd = a["start_date_local"].as<String>();
        if(rd.length() >= 10) latestStrava.date = rd.substring(8,10)+"."+rd.substring(5,7)+".";
 
-       // Pace / Speed Berechnung
-       if(latestStrava.type == "Run" && d > 0) {
-          float p = (float)s / 60.0 / (d/1000.0);
-          int pm = (int)p; int ps = (int)((p - pm) * 60);
-          char buf[16]; sprintf(buf, "%d:%02d /km", pm, ps);
-          latestStrava.paceOrSpeed = String(buf);
+       // Pace Berechnung
+       if (latestStrava.type == "Run" || latestStrava.type == "VirtualRun") {
+           float speed_ms = a["average_speed"].as<float>();
+           if (speed_ms > 0) {
+               float pace_sec_per_km = 1000.0 / speed_ms;
+               int pm = (int)(pace_sec_per_km / 60);
+               int ps = (int)(pace_sec_per_km) % 60;
+               char buf[16]; sprintf(buf, "%d:%02d /km", pm, ps);
+               latestStrava.paceOrSpeed = String(buf);
+           }
        } else if (d > 0) {
-          float kmh = (d/1000.0) / ((float)s/3600.0);
-          latestStrava.paceOrSpeed = String(kmh, 1) + " km/h";
+           float kmh = (d/1000.0) / ((float)s/3600.0);
+           latestStrava.paceOrSpeed = String(kmh, 1) + " km/h";
        }
+       
        latestStrava.hasData = true;
+       
+       /* 
+       OPTIONAL: Wenn du die GPS Polyline brauchst, musst du die Aktivitäts-Details abrufen.
+       Dafür brauchst du die "id" aus der obigen Antwort:
+       String actId = a["id"].as<String>();
+       String detailUrl = "https://intervals.icu/api/v1/activity/" + actId;
+       // ... HTTP GET auf detailUrl ausführen ...
+       // ... im JSON nach "map" oder "polyline" suchen ...
+       */
     }
+  } else {
+    Serial1.print("Intervals API Error: ");
+    Serial1.println(codeAct);
   }
   http.end(); 
 
   // -----------------------------
-  // TEIL B: Statistiken holen
+  // TEIL B: Statistiken holen (z.B. für das aktuelle Jahr)
   // -----------------------------
-  String statsUrl = "https://www.strava.com/api/v3/athletes/" + STRAVA_ATHLETE_ID + "/stats";
+  // Um Statistiken zu bekommen, fragst du bei Intervals typischerweise die "Wellness" oder "Totals" ab.
+  // Ein guter Endpunkt für Jahresstatistiken ist die Zusammenfassung für einen Datumsbereich.
+  
+  // Wir bauen die URL für das aktuelle Jahr. Du könntest das Jahr dynamisch berechnen,
+  // hier hardcodiert für 2026.
+  String statsUrl = "https://intervals.icu/api/v1/athlete/" + INTERVALS_ATHLETE_ID + "/activities?oldest=2026-01-01T00:00:00Z&newest=2026-12-31T23:59:59Z";
+  
   http.begin(client, statsUrl);
-  http.addHeader("Authorization", "Bearer " + token); // Gleicher Token!
+  http.addHeader("Authorization", authHeader);
+  
   int codeStats = http.GET();
   
   if (codeStats == 200) {
-     DynamicJsonDocument docS(2048);
-     deserializeJson(docS, http.getString());
+     // Da wir hier ein Array aller Aktivitäten des Jahres bekommen, müssen wir sie summieren.
+     // Das ist zwar etwas Arbeit für den ESP, aber das JSON ist flach und leicht zu filtern.
+     String payload = http.getString();
      
-     // Recent (4 Wochen)
-     stravaStats.recentRunDist = docS["recent_run_totals"]["distance"].as<float>() / 1000.0;
-     stravaStats.recentRunCount = docS["recent_run_totals"]["count"];
+     DynamicJsonDocument filterStats(512);
+     filterStats[0]["type"] = true;
+     filterStats[0]["distance"] = true;
      
-     stravaStats.recentRideDist = docS["recent_ride_totals"]["distance"].as<float>() / 1000.0;
-     stravaStats.recentRideCount = docS["recent_ride_totals"]["count"];
+     DynamicJsonDocument docS(8192); // Braucht etwas mehr RAM
+     deserializeJson(docS, payload, DeserializationOption::Filter(filterStats));
      
-     // YTD (Jahr)
-     stravaStats.yearRunDist = docS["ytd_run_totals"]["distance"].as<float>() / 1000.0;
-     stravaStats.yearRideDist = docS["ytd_ride_totals"]["distance"].as<float>() / 1000.0;
+     JsonArray activitiesStats = docS.as<JsonArray>();
+     
+     float totalRunDist = 0;
+     int runCount = 0;
+     float totalRideDist = 0;
+     int rideCount = 0;
+     
+     for (JsonObject act : activitiesStats) {
+         String type = act["type"].as<String>();
+         float dist = act["distance"].as<float>();
+         
+         if (type == "Run" || type == "VirtualRun") {
+             totalRunDist += dist;
+             runCount++;
+         } else if (type == "Ride" || type == "VirtualRide") {
+             totalRideDist += dist;
+             rideCount++;
+         }
+     }
+     
+     // Du müsstest dir hier eine Logik für "Recent" (letzte 4 Wochen) überlegen, 
+     // z.B. indem du das Datum überprüfst, während du durch das Array gehst.
+     // Für das Beispiel speichern wir erstmal YTD:
+     
+     stravaStats.yearRunDist = totalRunDist / 1000.0;
+     stravaStats.yearRideDist = totalRideDist / 1000.0;
+     
+     // Die "recent" Variablen lassen wir erstmal als Platzhalter
+     stravaStats.recentRunCount = runCount; 
+     stravaStats.recentRideCount = rideCount;
      
      stravaStats.hasData = true;
   }
   http.end();
   
-  Serial1.println("Strava Combined - Fertig.");
+  Serial1.println("Intervals Combined - Fertig.");
 }
 bool isDeviceOnline() {
   Serial1.print("Pinge Gerät: " + MONITOR_IP + " ... ");

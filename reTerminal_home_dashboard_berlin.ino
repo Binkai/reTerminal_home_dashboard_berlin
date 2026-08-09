@@ -71,7 +71,7 @@ void setup() {
     else if (wakeup_pin_mask & (1ULL << KEY1)) { 
         // Taste 1: Blättern
         currentPage++; 
-        if (currentPage > 3) currentPage = 0; // 0->1->2->3->0
+        if (currentPage > 2) currentPage = 0; // 0->1->2->3->0
     }
     else if (wakeup_pin_mask & (1ULL << KEY2)) { 
         // Taste 2 (Optional): Reset
@@ -146,7 +146,7 @@ void setup() {
        if (enableRotation) {
            // Rotation: Nächste Seite
            currentPage++;
-           if (currentPage > 3) currentPage = 0;
+           if (currentPage > 2) currentPage = 0;
        } else {
            // Keine Rotation: Fest auf Dashboard (Traffic)
            currentPage = 0;

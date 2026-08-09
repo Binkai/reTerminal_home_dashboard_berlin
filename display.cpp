@@ -211,7 +211,7 @@ void drawNewsPage(int nextUpdateMin, float voltage) {
     drawGlobalHeader("Tagesschau", voltage, nextUpdateMin);
 
     int yPos = 80;
-    if (newsCount == 0) { u8g2.setFont(FONT_SMALL); u8g2.setCursor(20, 100); u8g2.print("Keine Nachrichten abgerufen (newsCount == 0)!"); }
+    if (newsCount == 0) { u8g2.setFont(FONT_SMALL); u8g2.setCursor(20, 100); u8g2.print("Keine Nachrichten abgerufen!"); }
 
     u8g2.setFont(FONT_SMALL); 
     for (int i = 0; i < newsCount; i++) {
